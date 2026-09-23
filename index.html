@@ -1194,15 +1194,26 @@ I'm okay. Thanks."></textarea>
   const POLL_INTERVAL_MS = 10000; // refresh from the sheet periodically so other people's changes show up
   let sheetsOnline = false;
 
-  async function apiRequest(payload) {
+  async function apiRequest(payload, attempt) {
     // Body is sent as text/plain on purpose (no Content-Type header) so the
     // browser treats this as a "simple request" and skips the CORS preflight,
     // which Apps Script web apps can't answer.
-    const res = await fetch(SHEETS_API_URL, { method: 'POST', body: JSON.stringify(payload) });
-    if (!res.ok) throw new Error('네트워크 오류 (' + res.status + ')');
-    const json = await res.json();
-    if (!json.ok) throw new Error(json.error || 'API 오류');
-    return json.result;
+    attempt = attempt || 0;
+    try {
+      const res = await fetch(SHEETS_API_URL, { method: 'POST', body: JSON.stringify(payload) });
+      if (!res.ok) throw new Error('네트워크 오류 (' + res.status + ')');
+      const json = await res.json();
+      if (!json.ok) throw new Error(json.error || 'API 오류');
+      return json.result;
+    } catch (err) {
+      // 다른 기기/네트워크에서 가끔 생기는 일시적인 오류 때문에 곧바로
+      // "이 브라우저에만 저장" 모드로 떨어지지 않도록, 한 번만 짧게 재시도해요.
+      if (attempt < 1) {
+        await new Promise(resolve => setTimeout(resolve, 700));
+        return apiRequest(payload, attempt + 1);
+      }
+      throw err;
+    }
   }
   function apiList(sheet) { return apiRequest({ action: 'list', sheet: sheet }); }
   function apiAdd(sheet, data) { return apiRequest({ action: 'add', sheet: sheet, data: data }); }
@@ -1479,11 +1490,16 @@ I'm okay. Thanks."></textarea>
       unitStore = makeSheetUnitStore();
       resultsStore = makeSheetResultsStore();
 
-      await Promise.all([refreshPassages(), refreshPublishers(), refreshUnits(), refreshResults()]);
+      // 화면에 바로 필요한 지문/출판사/과 목록부터 먼저 불러와서 첫 화면이
+      // 뜨는 시간을 줄여요. 기록(Results)은 급하지 않으니 화면이 뜬 뒤에
+      // 백그라운드에서 따로 불러와요.
+      await Promise.all([refreshPassages(), refreshPublishers(), refreshUnits()]);
 
       sheetsOnline = true;
       storageNoteEl.textContent = '구글시트에 저장돼서 다음에 다시 방문해도, 다른 기기에서도 남아 있어요';
       storageNoteEl.classList.remove('offline');
+
+      refreshResults().catch(() => {});
 
       setInterval(() => {
         if (document.hidden) return;
