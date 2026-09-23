@@ -1206,6 +1206,7 @@ I'm okay. Thanks."></textarea>
   }
   function apiList(sheet) { return apiRequest({ action: 'list', sheet: sheet }); }
   function apiAdd(sheet, data) { return apiRequest({ action: 'add', sheet: sheet, data: data }); }
+  function apiBatchAdd(sheet, dataArray) { return apiRequest({ action: 'batchAdd', sheet: sheet, data: dataArray }); }
   function apiUpdate(sheet, id, data) { return apiRequest({ action: 'update', sheet: sheet, id: id, data: data }); }
   function apiDelete(sheet, id) { return apiRequest({ action: 'delete', sheet: sheet, id: id }); }
 
@@ -1241,9 +1242,17 @@ I'm okay. Thanks."></textarea>
     return {
       add: async (passage) => {
         const withId = { ...passage, id: 'p' + Date.now() + Math.random().toString(36).slice(2, 8) };
-        allPassages.push(withId);
+        allPassages.unshift(withId);
         lsSaveAll(allPassages);
         renderAll();
+        return withId;
+      },
+      addMany: async (passages) => {
+        const withIds = passages.map((p, i) => ({ ...p, id: 'p' + Date.now() + i + Math.random().toString(36).slice(2, 8) }));
+        allPassages = [...withIds, ...allPassages];
+        lsSaveAll(allPassages);
+        renderAll();
+        return withIds;
       },
       remove: async (id) => {
         allPassages = allPassages.filter(p => p.id !== id);
@@ -1339,10 +1348,11 @@ I'm okay. Thanks."></textarea>
   async function refreshPublishers() {
     let rows = await apiList('Publishers');
     if (rows.length === 0) {
-      for (const name of DEFAULT_PUBLISHERS) { await apiAdd('Publishers', { name }); }
+      await apiBatchAdd('Publishers', DEFAULT_PUBLISHERS.map(name => ({ name })));
       rows = await apiList('Publishers');
     }
-    publisherList = rows.map(r => r.name).filter(Boolean);
+    publisherRows = rows.map(r => ({ id: r.id, name: r.name })).filter(r => r.name);
+    publisherList = publisherRows.map(r => r.name);
     publishersLoaded = true;
     renderAll();
   }
@@ -1350,10 +1360,11 @@ I'm okay. Thanks."></textarea>
   async function refreshUnits() {
     let rows = await apiList('Units');
     if (rows.length === 0) {
-      for (const name of DEFAULT_UNITS) { await apiAdd('Units', { name }); }
+      await apiBatchAdd('Units', DEFAULT_UNITS.map(name => ({ name })));
       rows = await apiList('Units');
     }
-    unitList = rows.map(r => r.name).filter(Boolean);
+    unitRows = rows.map(r => ({ id: r.id, name: r.name })).filter(r => r.name);
+    unitList = unitRows.map(r => r.name);
     unitsLoaded = true;
     renderAll();
   }
@@ -1365,11 +1376,37 @@ I'm okay. Thanks."></textarea>
     renderResultsAdmin();
   }
 
+  // 출판사/단원은 목록이 작아서 로컬 캐시(id 포함)를 들고 있다가, 추가/삭제할 때
+  // 서버 전체를 다시 불러오지 않고 캐시만 갱신해요. (삭제할 때 id 조회용 list 호출도 생략)
+  let publisherRows = [];
+  let unitRows = [];
+
   function makeSheetPassageStore() {
     return {
-      add: async (passage) => { await apiAdd('Passages', passage); await refreshPassages(); },
-      remove: async (id) => { await apiDelete('Passages', id); await refreshPassages(); },
-      update: async (id, data) => { await apiUpdate('Passages', id, data); await refreshPassages(); }
+      add: async (passage) => {
+        const result = await apiAdd('Passages', passage);
+        const withId = { ...passage, id: result.id };
+        allPassages = [withId, ...allPassages];
+        renderAll();
+        return withId;
+      },
+      addMany: async (passages) => {
+        const results = await apiBatchAdd('Passages', passages);
+        const withIds = passages.map((p, i) => ({ ...p, id: results[i].id }));
+        allPassages = [...withIds, ...allPassages];
+        renderAll();
+        return withIds;
+      },
+      remove: async (id) => {
+        await apiDelete('Passages', id);
+        allPassages = allPassages.filter(p => p.id !== id);
+        renderAll();
+      },
+      update: async (id, data) => {
+        await apiUpdate('Passages', id, data);
+        allPassages = allPassages.map(p => p.id === id ? { ...p, ...data } : p);
+        renderAll();
+      }
     };
   }
 
@@ -1378,14 +1415,19 @@ I'm okay. Thanks."></textarea>
       add: async (name) => {
         const trimmed = name.trim();
         if (!trimmed || publisherList.includes(trimmed)) return;
-        await apiAdd('Publishers', { name: trimmed });
-        await refreshPublishers();
+        const result = await apiAdd('Publishers', { name: trimmed });
+        publisherRows.push({ id: result.id, name: trimmed });
+        publisherList = [...publisherList, trimmed];
+        renderAll();
       },
       remove: async (name) => {
-        const rows = await apiList('Publishers');
-        const row = rows.find(r => r.name === name);
-        if (row) await apiDelete('Publishers', row.id);
-        await refreshPublishers();
+        const row = publisherRows.find(r => r.name === name);
+        if (row) {
+          await apiDelete('Publishers', row.id);
+          publisherRows = publisherRows.filter(r => r.id !== row.id);
+        }
+        publisherList = publisherList.filter(n => n !== name);
+        renderAll();
       }
     };
   }
@@ -1395,22 +1437,37 @@ I'm okay. Thanks."></textarea>
       add: async (name) => {
         const trimmed = name.trim();
         if (!trimmed || unitList.includes(trimmed)) return;
-        await apiAdd('Units', { name: trimmed });
-        await refreshUnits();
+        const result = await apiAdd('Units', { name: trimmed });
+        unitRows.push({ id: result.id, name: trimmed });
+        unitList = [...unitList, trimmed];
+        renderAll();
       },
       remove: async (name) => {
-        const rows = await apiList('Units');
-        const row = rows.find(r => r.name === name);
-        if (row) await apiDelete('Units', row.id);
-        await refreshUnits();
+        const row = unitRows.find(r => r.name === name);
+        if (row) {
+          await apiDelete('Units', row.id);
+          unitRows = unitRows.filter(r => r.id !== row.id);
+        }
+        unitList = unitList.filter(n => n !== name);
+        renderAll();
       }
     };
   }
 
   function makeSheetResultsStore() {
     return {
-      add: async (record) => { await apiAdd('Results', record); await refreshResults(); },
-      remove: async (id) => { await apiDelete('Results', id); await refreshResults(); }
+      add: async (record) => {
+        const result = await apiAdd('Results', record);
+        const withId = { ...record, id: result.id };
+        allResults = [withId, ...allResults];
+        renderResultsAdmin();
+        return withId;
+      },
+      remove: async (id) => {
+        await apiDelete('Results', id);
+        allResults = allResults.filter(r => r.id !== id);
+        renderResultsAdmin();
+      }
     };
   }
 
@@ -1994,10 +2051,17 @@ Go straight and turn left."></textarea>
     const groups = blocksToLineGroups(text);
     if (groups.length === 0) return;
     addPassageBtn.disabled = true; addPassageBtn.textContent = '저장 중...';
-    for (const lines of groups) {
-      await store.add({ grade: formGrade, publisher: formPublisher, unit: formUnit, lines, createdAt: Date.now() });
+    const now = Date.now();
+    const newPassages = groups.map((lines, i) => ({ grade: formGrade, publisher: formPublisher, unit: formUnit, lines, createdAt: now - i }));
+    try {
+      if (store.addMany) {
+        await store.addMany(newPassages);
+      } else {
+        for (const p of newPassages) { await store.add(p); }
+      }
+    } finally {
+      addPassageBtn.disabled = false; addPassageBtn.textContent = '지문 저장';
     }
-    addPassageBtn.disabled = false; addPassageBtn.textContent = '지문 저장';
     passageInput.value = '';
     selectedGrade = formGrade; selectedPublisher = formPublisher; selectedUnit = formUnit;
     renderAll();
@@ -2099,11 +2163,24 @@ Go straight and turn left."></textarea>
       testTimeLeft -= 1;
       if (testTimeLeft <= 0) {
         clearInterval(testTimerInterval);
-        finalizeTest('timeout');
+        handleTestTimeout();
       } else {
         renderTestRun();
       }
     }, 1000);
+  }
+
+  function handleTestTimeout() {
+    // 한 문제 풀이 시간이 초과되면 테스트 전체를 끝내는 게 아니라,
+    // 이번 문제만 오답 처리하고 다음 문제로 넘어갈 수 있게 해요.
+    const quiz = testQuizState;
+    if (!quiz || quiz.confirmed) return;
+    captureCurrentTestAnswer();
+    if (testAnswers[testIndex]) testAnswers[testIndex].isCorrect = false;
+    quiz.confirmed = true;
+    quiz.lastCorrect = false;
+    clearInterval(testTimerInterval);
+    renderTestRun();
   }
 
   function captureCurrentTestAnswer() {
